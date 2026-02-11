@@ -514,12 +514,16 @@ class BasketballGoalDetectionSystem:
         rim_det = max(detections['rim'], key=lambda x: x['confidence'])
         rim_bbox = rim_det['bbox']
 
-        # 单球追踪：选择置信度最高的球，直接使用检测结果
+        # 单球追踪：使用已有的BallTracker对象
         ball_tracker = None
-        if detections['ball']:
+        if detections['ball'] and 0 in self.ball_trackers:
+            # 使用已有的BallTracker，它包含完整的轨迹和速度信息
+            ball_tracker = self.ball_trackers[0]
+        elif detections['ball']:
+            # 如果还没有BallTracker，创建一个新的
             best_ball = max(detections['ball'], key=lambda x: x['confidence'])
-            # 创建一个简单的tracker对象来传递位置信息
-            ball_tracker = SimpleTracker(best_ball['bbox'])
+            ball_tracker = BallTracker(0)
+            ball_tracker.update(best_ball['bbox'], frame_id)
 
         # 调用进球检测
         goal_detected = self.goal_detector.check_goal(ball_tracker, rim_bbox, frame_id, frame)

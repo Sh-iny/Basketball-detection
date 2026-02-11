@@ -22,6 +22,7 @@ class BallTracker:
         self.track_id = track_id
         self.positions = deque(maxlen=max_history)
         self.bboxes = deque(maxlen=max_history)
+        self.radii = deque(maxlen=max_history)  # 记录球的半径
         self.frame_ids = deque(maxlen=max_history)
         self.is_active = True
         self.lost_frames = 0  # 跟踪丢失的帧数
@@ -38,6 +39,13 @@ class BallTracker:
         center = bbox_center(bbox)
         self.positions.append(center)
         self.bboxes.append(bbox)
+        
+        # 计算球的半径（基于边界框的平均边长的一半）
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+        radius = (width + height) / 4  # 平均边长的一半
+        self.radii.append(radius)
+        
         self.frame_ids.append(frame_id)
 
     def get_velocity(self):
@@ -80,6 +88,26 @@ class BallTracker:
         """当前边界框"""
         return self.bboxes[-1] if self.bboxes else None
 
+    @property
+    def current_radius(self):
+        """当前半径"""
+        return self.radii[-1] if self.radii else None
+
+    def get_average_radius(self, window=5):
+        """
+        获取最近几帧的平均半径
+
+        Args:
+            window: 窗口大小
+
+        Returns:
+            float: 平均半径
+        """
+        if len(self.radii) < 1:
+            return 0
+        recent_radii = list(self.radii)[-window:]
+        return sum(recent_radii) / len(recent_radii)
+
     def predict_position(self, frames_ahead=1):
         """
         基于历史轨迹预测未来位置
@@ -112,6 +140,41 @@ class BallTracker:
         predicted_y = last_pos[1] + avg_vy * frames_ahead
 
         return (predicted_x, predicted_y)
+
+    def get_recent_velocities(self, window=3):
+        """
+        获取最近几帧的速度数据
+
+        Args:
+            window: 窗口大小
+
+        Returns:
+            list: 速度数据列表，每个元素为 (vx, vy, speed)
+        """
+        if len(self.positions) < window + 1:
+            return []
+        velocities = []
+        for i in range(len(self.positions) - window, len(self.positions) - 1):
+            vx, vy, speed = calculate_velocity(self.positions[i], self.positions[i+1])
+            velocities.append((vx, vy, speed))
+        return velocities
+
+    def get_velocity_change(self, window=2):
+        """
+        获取水平方向速度变化
+
+        Args:
+            window: 检测窗口大小
+
+        Returns:
+            float: 水平速度变化值
+        """
+        velocities = self.get_recent_velocities(window)
+        if len(velocities) < 2:
+            return 0
+        # 计算水平速度变化
+        vx_change = abs(velocities[-1][0] - velocities[-2][0])
+        return vx_change
 
     def mark_lost(self):
         """标记跟踪丢失一帧"""

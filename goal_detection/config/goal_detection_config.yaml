@@ -25,6 +25,9 @@ goal_detection:
   consecutive_frames: 3        # 连续帧数要求
   cooldown_frames: 5           # 进球冷却帧数
   vertical_threshold: 0.3      # 垂直方向阈值
+  horizontal_velocity_change_threshold: 0.3  # 水平速度变化阈值（像素/帧）- 降低以提高灵敏度
+  velocity_change_window: 3     # 速度变化检测窗口（帧数）- 增加以提高稳定性
+  min_horizontal_velocity_for_change_detection: 0.5  # 启动速度变化检测的最小水平速度（像素/帧）- 降低以提高灵敏度
 
 # 可视化参数
 visualization:
