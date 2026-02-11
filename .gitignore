@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE
+.vscode/
+.idea/
+.claude/
+.trae/
+*.swp
+*.swo
+*~
+
+# Operating System
+.DS_Store
+Thumbs.db
+
+# Virtual Environment
+venv/
+env/
+*.venv/
+
+# Models
+# 包含模型文件
+
+# Output
+output/
+runs/
+*.mp4
+
+# Data
+# 排除数据集文件
+data/
+br/
+bpr/
+merged_basketball_dataset/
+dataset/
+
+# Large files
+# 排除大型压缩文件
+*.zip
+*.tar.gz
+
+# 保留模型权重文件
+# *.pth
+
+# 数据集文件
+dataset/
+*.json
+*.csv
+
+# Configuration
+.env
+config.yaml
+
+# Logs
+*.log
+
+# Testing
+test_output_*.mp4
+
+# Temporary
+.temp/
+tmp/
+
+# Conda
+.conda/
+
+# Misc
+*.bak
+*.old
+*.tmp

@@ -1,0 +1,49 @@
+# 篮球进球检测系统配置文件
+
+# 模型配置（单YOLO系统）
+models:
+  path: "models/BR2/weights/best.pt"  # 单模型路径
+  confidence: 0.5            # 置信度阈值（与predict_video_mp4.py一致）
+  rim_update_interval: 5     # 篮筐检测更新间隔（每5帧）
+  rim_smooth_window: 3       # 篮筐检测平滑窗口
+
+# 检测参数
+detection:
+  confidence_threshold: 0.5    # 置信度阈值（与predict_video_mp4.py一致）
+  iou_threshold: 0.7           # IoU阈值
+
+# 跟踪参数
+tracking:
+  tracker_type: "botsort"      # 跟踪器类型 (botsort/bytetrack)
+  max_age: 30                  # 最大丢失帧数
+  min_hits: 3                  # 最小命中次数
+
+# 进球检测参数
+goal_detection:
+  rim_expansion_ratio: 1.2     # 篮筐区域扩展比例
+  min_velocity_threshold: 2.0  # 最小速度阈值（像素/帧）
+  consecutive_frames: 3        # 连续帧数要求
+  cooldown_frames: 5           # 进球冷却帧数
+  vertical_threshold: 0.3      # 垂直方向阈值
+
+# 可视化参数
+visualization:
+  draw_tracks: true            # 是否绘制跟踪框
+  draw_trajectory: true        # 是否绘制轨迹
+  trajectory_length: 30        # 轨迹长度（帧数）
+  goal_highlight_duration: 90  # 进球高亮持续帧数（约3秒@30fps）
+
+  # 颜色配置 (BGR格式)
+  colors:
+    ball: [0, 255, 0]          # 篮球 - 绿色
+    rim: [255, 0, 0]           # 篮筐 - 蓝色
+    people: [0, 255, 255]      # 人 - 黄色
+    trajectory: [0, 255, 255]  # 轨迹 - 黄色
+    goal_event: [0, 0, 255]    # 进球事件 - 红色
+
+# 输出参数
+output:
+  save_video: true             # 是否保存视频
+  save_statistics: true        # 是否保存统计信息
+  save_events_json: true       # 是否保存事件JSON
+  output_dir: "runs/goal_detection"  # 输出目录

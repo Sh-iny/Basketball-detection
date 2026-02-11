@@ -1,0 +1,64 @@
+# 篮球进球检测系统配置文件 - RT-DETR模型专用
+
+# 预处理参数
+preprocessing:
+  normalize_brightness: true   # 亮度归一化
+  brightness_target: 128       # 目标亮度
+  brightness_strength: 0.3     # 调整强度
+  use_letterbox: true          # 启用letterbox（保持宽高比）
+  target_size: 640             # 目标尺寸
+
+# 模型配置（双YOLO系统）
+models:
+  ball_model:
+    path: "trained_models/rtdetr_nano/checkpoint_best_total.pth"
+    confidence: 0.5            # RT-DETR需要更高阈值
+    imgsz: 640
+
+  rim_model:
+    path: "trained_models/yolo26n/weights/best.pt"
+    confidence: 0.5            # 高置信度，减少误检
+    imgsz: 640                 # 中等分辨率即可
+    update_interval: 5         # 每5帧更新一次
+    smooth_window: 3           # 平滑窗口（3帧平均）
+
+# 检测参数
+detection:
+  confidence_threshold: 0.3    # 置信度阈值（降低以提高球的检测率）
+  iou_threshold: 0.7           # IoU阈值
+
+# 跟踪参数
+tracking:
+  tracker_type: "botsort"      # 跟踪器类型 (botsort/bytetrack)
+  max_age: 30                  # 最大丢失帧数
+  min_hits: 1                  # 最小命中次数（降低以捕获短暂出现的球）
+
+# 进球检测参数
+goal_detection:
+  rim_expansion_ratio: 1.2     # 篮筐区域扩展比例
+  min_velocity_threshold: 2.0  # 最小速度阈值（像素/帧）
+  consecutive_frames: 3        # 连续帧数要求
+  cooldown_frames: 60          # 进球冷却帧数（约2秒@30fps）
+  vertical_threshold: 0.3      # 垂直方向阈值
+
+# 可视化参数
+visualization:
+  draw_tracks: true            # 是否绘制跟踪框
+  draw_trajectory: true        # 是否绘制轨迹
+  trajectory_length: 30        # 轨迹长度（帧数）
+  goal_highlight_duration: 90  # 进球高亮持续帧数（约3秒@30fps）
+
+  # 颜色配置 (BGR格式)
+  colors:
+    ball: [0, 255, 0]          # 篮球 - 绿色
+    rim: [255, 0, 0]           # 篮筐 - 蓝色
+    people: [0, 255, 255]      # 人 - 黄色
+    trajectory: [0, 255, 255]  # 轨迹 - 黄色
+    goal_event: [0, 0, 255]    # 进球事件 - 红色
+
+# 输出参数
+output:
+  save_video: true             # 是否保存视频
+  save_statistics: true        # 是否保存统计信息
+  save_events_json: true       # 是否保存事件JSON
+  output_dir: "runs/goal_detection"  # 输出目录
