@@ -42,13 +42,25 @@ dataset/
 *.zip
 *.tar.gz
 
-# 保留模型权重文件
-# *.pth
+# 排除模型权重文件
+*.pth
+*.pt
 
 # 数据集文件
 dataset/
+datasets/
 *.json
 *.csv
+
+# 其他大型文件
+journal.pone.0326964.pdf
+
+# Claude memory
+.claude_memory.yaml
+
+# Trained models
+trained_models/
+pretrained/
 
 # Configuration
 .env
