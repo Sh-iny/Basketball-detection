@@ -46,9 +46,14 @@
 ┌─────────────────────────────────┐
 │  目标跟踪与过滤                 │
 ├─────────────────────────────────┤
-│  • 篮球跟踪器 (BallTracker)     │
-│    - 轨迹记录: 30帧             │
-│    - 速度计算                   │
+│  • 篮球跟踪器                   │
+│    - BallTracker (原始)         │
+│      - 轨迹记录: 30帧           │
+│      - 速度计算                 │
+│    - SORT跟踪器 (新增)          │
+│      - Kalman滤波预测          │
+│      - 匈牙利算法数据关联       │
+│      - 多目标跟踪               │
 │  • 静止球过滤                   │
 │    - 静止阈值: 60帧             │
 │  • 跳跃检测过滤                 │
@@ -153,7 +158,8 @@ basketball/
 │   ├── detector/               # 检测器模块
 │   │   └── goal_detector.py    # 进球检测器（v1.1优化版）
 │   ├── tracker/                # 跟踪器模块
-│   │   └── ball_tracker.py     # 篮球跟踪器
+│   │   ├── ball_tracker.py     # 篮球跟踪器
+│   │   └── sort_tracker.py     # SORT跟踪器 (新增)
 │   ├── utils/                  # 工具函数
 │   │   ├── geometry.py         # 几何计算工具
 │   │   └── video_preprocessor.py  # 视频预处理器
@@ -202,6 +208,11 @@ basketball/
 | 静止过滤 | 静止阈值 | 60帧 | 约2秒@30fps |
 | 静止过滤 | 位置容差 | 30像素 | 位置网格化精度 |
 | 跳跃过滤 | 跳跃阈值 | 200像素 | 单帧最大移动距离 |
+| SORT跟踪 | 目标生命周期 | 10帧 | 目标最大生命周期 |
+| SORT跟踪 | 最小命中次数 | 1帧 | 开始跟踪所需最小命中次数 |
+| SORT跟踪 | IoU阈值 | 0.2 | 目标关联IoU阈值 |
+| SORT跟踪 | 过程噪声 | 0.1 | 速度过程噪声协方差 |
+| SORT跟踪 | 测量噪声 | 5.0 | 测量噪声协方差 |
 | 进球检测 | 篮筐扩展 | 1.2x | 篮筐区域扩展比例 |
 | 进球检测 | 连续帧数 | 3帧 | 最小连续帧数要求 |
 | 进球检测 | 冷却期 | 60帧 | 约2秒@30fps |
@@ -218,6 +229,9 @@ basketball/
 - OpenCV
 - PyTorch
 - NumPy, Pandas, PyYAML
+- FilterPy (SORT跟踪器所需)
+- SciPy (SORT跟踪器所需)
+- scikit-image (可选，用于图像处理)
 
 ### 安装依赖
 
@@ -227,12 +241,26 @@ pip install -r requirements.txt
 
 ### 运行进球检测
 
+#### 使用SORT跟踪器（默认）
+
 ```bash
 python goal_detection/goal_detection.py \
     --model models/BR2/weights/best.pt \
     --video test/basketball2.mp4 \
     --config goal_detection/config/goal_detection_config.yaml \
     --output runs/goal_detection/output.mp4 \
+    --debug
+```
+
+#### 使用原始BallTracker
+
+```bash
+python goal_detection/goal_detection.py \
+    --model models/BR2/weights/best.pt \
+    --video test/basketball2.mp4 \
+    --config goal_detection/config/goal_detection_config.yaml \
+    --output runs/goal_detection/output_original.mp4 \
+    --tracker original \
     --debug
 ```
 
@@ -245,6 +273,7 @@ python goal_detection/goal_detection.py \
 | --config | str | 否 | 配置文件路径，默认：goal_detection/config/goal_detection_config.yaml |
 | --output | str | 否 | 输出视频路径 |
 | --debug | bool | 否 | 开启调试模式，输出详细检测统计 |
+| --tracker | str | 否 | 跟踪器类型，可选：'sort'（默认）或 'original' |
 
 ## 输出文件
 
@@ -321,7 +350,14 @@ python scripts/train_ball_model.py \
 
 ## 版本历史
 
-### v1.1（最新）
+### v1.2（最新）
+- **新增SORT跟踪器**：集成Kalman滤波+匈牙利算法的多目标跟踪算法
+- **增强跟踪稳定性**：提高篮球跟踪的连续性和准确性
+- **优化参数配置**：针对篮球运动特点调整SORT跟踪器参数
+- **添加跟踪器选择**：支持在SORT跟踪器和原始BallTracker之间切换
+- **更新依赖管理**：添加FilterPy和SciPy依赖
+
+### v1.1
 - **优化进球检测逻辑**：添加水平碰撞检测和速度变化检测
 - **增强事件记录**：记录球和篮筐半径信息
 - **改进配置系统**：添加速度变化检测相关参数

@@ -20,7 +20,7 @@ def test_goal_detection_system():
     """
     # 测试参数
     model_path = "models/BR2/weights/best.pt"
-    video_path = "output/basketball2.mp4"  # 使用实际存在的测试视频
+    video_path = "test/basketball2.mp4"  # 使用实际存在的测试视频
     config_path = "goal_detection/config/goal_detection_config.yaml"
     output_path = "runs/test_goal_detection/output.mp4"
     
@@ -50,11 +50,12 @@ def test_goal_detection_system():
         # 创建输出目录
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         
-        # 初始化系统
+        # 初始化系统 - 使用SORT跟踪器
         system = BasketballGoalDetectionSystem(
             model_path=model_path,
             config_path=config_path,
-            debug=True  # 开启调试模式以获取详细统计
+            debug=True,  # 开启调试模式以获取详细统计
+            tracker_type='sort'  # 使用SORT跟踪器
         )
         
         # 处理视频

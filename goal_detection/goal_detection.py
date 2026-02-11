@@ -16,6 +16,7 @@ from .detector.goal_detector import GoalDetector
 from .visualizer.video_annotator import VideoAnnotator
 from .utils.video_preprocessor import VideoPreprocessor, DetectionSmoother
 from .tracker.ball_tracker import BallTracker
+from .tracker.sort_tracker import BasketballSORTTracker
 
 
 class SimpleTracker:
@@ -36,7 +37,7 @@ class SimpleTracker:
 class BasketballGoalDetectionSystem:
     """篮球进球检测系统"""
 
-    def __init__(self, model_path, config_path, debug=False):
+    def __init__(self, model_path, config_path, debug=False, tracker_type='sort'):
         """
         初始化系统（单YOLO模型）
 
@@ -44,6 +45,7 @@ class BasketballGoalDetectionSystem:
             model_path: 检测模型路径（同时检测篮球和篮筐）
             config_path: 配置文件路径
             debug: 是否开启调试模式
+            tracker_type: 跟踪器类型 ('sort' 或 'original')
         """
         # 加载配置
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -62,13 +64,20 @@ class BasketballGoalDetectionSystem:
 
         # 初始化组件
         self.goal_detector = GoalDetector(self.config)
-        self.ball_trackers = {}
+        self.ball_trackers = {}  # 用于兼容旧代码
+        self.sort_tracker = BasketballSORTTracker(
+            max_age=8,  # 延长目标生命周期，适应篮球快速运动和暂时遮挡
+            min_hits=2,  # 减少最小命中次数，更快开始跟踪
+            iou_threshold=0.25  # 降低IoU阈值，提高匹配成功率
+        )
+        self.tracker_type = tracker_type
         self.annotator = None
         self.debug = debug
 
         # 类别映射
         self.class_names = self.model.names
         print(f"模型类别: {self.class_names}")
+        print(f"使用跟踪器: {'SORT' if tracker_type == 'sort' else 'Original BallTracker'}")
 
         # 调试统计
         if self.debug:
@@ -172,12 +181,14 @@ class BasketballGoalDetectionSystem:
                 if self.config['visualization']['draw_trajectory']:
                     traj_length = self.config['visualization']['trajectory_length']
                     colors = self.config['visualization']['colors']
-                    for tracker in self.ball_trackers.values():
+                    
+                    for tracker_id, tracker in self.ball_trackers.items():
                         trajectory = tracker.get_trajectory(traj_length)
                         if len(trajectory) > 1:
                             # 轨迹点已经是原始尺寸，直接绘制
                             points = np.array(trajectory, dtype=np.int32)
-                            cv2.polylines(annotated_frame, [points], False, colors['trajectory'], 2)
+                            # 使用原始线条宽度和颜色
+                            cv2.polylines(annotated_frame, [points], False, colors['trajectory'], 2, lineType=cv2.LINE_AA)
                 
                 # 叠加进球检测结果
                 if goal_detected or self._is_in_goal_highlight_period(frame_id):
@@ -211,6 +222,9 @@ class BasketballGoalDetectionSystem:
         cap.release()
         if self.annotator:
             self.annotator.release()
+        
+        # 清理SORT跟踪器
+        self.sort_tracker.clear()
 
         # 保存统计信息
         self._save_statistics(output_path)
@@ -462,15 +476,117 @@ class BasketballGoalDetectionSystem:
             detections: 检测结果
             frame_id: 帧ID
         """
-        # 单球模式：只维护一个tracker，忽略track_id变化
-        if detections['ball']:
-            best_ball = max(detections['ball'], key=lambda x: x.get('confidence', 0))
-
-            # 使用固定的track_id=0
-            if 0 not in self.ball_trackers:
-                self.ball_trackers[0] = BallTracker(0)
-
-            self.ball_trackers[0].update(best_ball['bbox'], frame_id)
+        if self.tracker_type == 'sort':
+            # 使用SORT跟踪器更新（无论是否有新的检测结果）
+            self.sort_tracker.update(detections['ball'])
+            
+            # 获取SORT跟踪结果，转换为兼容旧代码的格式
+            sort_trackers = self.sort_tracker.get_ball_trackers()
+            
+            # 调试信息：打印300-310帧的跟踪情况
+            if 300 <= frame_id <= 310:
+                print(f"[调试] 帧 {frame_id}: SORT跟踪器数量 = {len(sort_trackers)}")
+                print(f"[调试] 帧 {frame_id}: 检测到的篮球数量 = {len(detections['ball'])}")
+                for i, ball_det in enumerate(detections['ball']):
+                    bbox = ball_det['bbox']
+                    center_x = (bbox[0] + bbox[2]) / 2
+                    center_y = (bbox[1] + bbox[3]) / 2
+                    confidence = ball_det.get('confidence', 0.5)
+                    print(f"[调试] 帧 {frame_id}: 检测 {i} 位置 = ({center_x:.1f}, {center_y:.1f}) 置信度 = {confidence:.2f}")
+                for track_id, tracker in sort_trackers.items():
+                    bbox = tracker['bbox']
+                    center_x = (bbox[0] + bbox[2]) / 2
+                    center_y = (bbox[1] + bbox[3]) / 2
+                    print(f"[调试] 帧 {frame_id}: SORT跟踪器 {track_id} 位置 = ({center_x:.1f}, {center_y:.1f}) 置信度 = {tracker['confidence']:.2f}")
+            
+            # 保持与旧代码的兼容性
+            if sort_trackers:
+                # 选择置信度最高的篮球跟踪器
+                best_track_id = max(sort_trackers.keys(), key=lambda x: sort_trackers[x]['confidence'])
+                best_tracker = sort_trackers[best_track_id]
+                
+                # 调试信息：打印300-310帧的最佳跟踪器
+                if 300 <= frame_id <= 310:
+                    bbox = best_tracker['bbox']
+                    center_x = (bbox[0] + bbox[2]) / 2
+                    center_y = (bbox[1] + bbox[3]) / 2
+                    print(f"[调试] 帧 {frame_id}: 最佳跟踪器 {best_track_id} 位置 = ({center_x:.1f}, {center_y:.1f}) 置信度 = {best_tracker['confidence']:.2f}")
+                
+                # 更新到旧的ball_trackers字典中，保持兼容性
+                if 0 not in self.ball_trackers:
+                    self.ball_trackers[0] = BallTracker(0)
+                
+                # 使用SORT跟踪器的边界框更新旧的BallTracker
+                self.ball_trackers[0].update(best_tracker['bbox'], frame_id)
+                
+                # 调试信息：打印300-310帧的BallTracker轨迹状态
+                if 300 <= frame_id <= 310:
+                    trajectory = self.ball_trackers[0].get_trajectory()
+                    print(f"[调试] 帧 {frame_id}: BallTracker轨迹长度 = {len(trajectory)}")
+                    if len(trajectory) > 1:
+                        last_pos = trajectory[-1]
+                        prev_pos = trajectory[-2]
+                        distance = ((last_pos[0] - prev_pos[0]) ** 2 + (last_pos[1] - prev_pos[1]) ** 2) ** 0.5
+                        print(f"[调试] 帧 {frame_id}: 轨迹最后两点 = ({prev_pos[0]:.1f}, {prev_pos[1]:.1f}) -> ({last_pos[0]:.1f}, {last_pos[1]:.1f}) 距离 = {distance:.2f}")
+            else:
+                # 如果SORT跟踪器没有返回结果
+                if 300 <= frame_id <= 310:
+                    print(f"[调试] 帧 {frame_id}: SORT跟踪器没有返回结果")
+                
+                # 关键修复：如果有新的检测结果，直接使用检测结果更新BallTracker
+                if detections['ball']:
+                    if 300 <= frame_id <= 310:
+                        print(f"[调试] 帧 {frame_id}: 有新的检测结果，直接使用检测结果更新BallTracker")
+                    # 选择置信度最高的检测结果
+                    best_detection = max(detections['ball'], key=lambda x: x['confidence'])
+                    bbox = best_detection['bbox']
+                    
+                    # 更新BallTracker
+                    if 0 not in self.ball_trackers:
+                        self.ball_trackers[0] = BallTracker(0)
+                    
+                    # 直接使用检测结果更新BallTracker
+                    self.ball_trackers[0].update(bbox, frame_id)
+                    
+                    if 300 <= frame_id <= 310:
+                        center_x = (bbox[0] + bbox[2]) / 2
+                        center_y = (bbox[1] + bbox[3]) / 2
+                        print(f"[调试] 帧 {frame_id}: 使用检测结果位置 = ({center_x:.1f}, {center_y:.1f})")
+                else:
+                    # 只有当没有新的检测结果时，才使用历史位置进行预测
+                    if 0 in self.ball_trackers:
+                        # 只有当跟踪器有足够的历史数据时才使用预测
+                        if hasattr(self.ball_trackers[0], 'positions') and len(self.ball_trackers[0].positions) > 5:
+                            # 使用最后一次的位置作为预测，避免激进的预测
+                            last_pos = self.ball_trackers[0].positions[-1]
+                            # 使用最后一次的边界框大小
+                            if hasattr(self.ball_trackers[0], 'bboxes') and len(self.ball_trackers[0].bboxes) > 0:
+                                last_bbox = self.ball_trackers[0].bboxes[-1]
+                                width = last_bbox[2] - last_bbox[0]
+                                height = last_bbox[3] - last_bbox[1]
+                                stable_bbox = [
+                                    last_pos[0] - width/2,
+                                    last_pos[1] - height/2,
+                                    last_pos[0] + width/2,
+                                    last_pos[1] + height/2
+                                ]
+                                # 只在连续丢失帧数较少时使用稳定预测
+                                if hasattr(self.ball_trackers[0], 'lost_frames') and self.ball_trackers[0].lost_frames < 3:
+                                    if 300 <= frame_id <= 310:
+                                        print(f"[调试] 帧 {frame_id}: 使用稳定预测位置 = ({last_pos[0]:.1f}, {last_pos[1]:.1f})")
+                                    self.ball_trackers[0].update(stable_bbox, frame_id)
+        else:
+            # 使用原始BallTracker更新
+            if detections['ball']:
+                if 0 not in self.ball_trackers:
+                    self.ball_trackers[0] = BallTracker(0)
+                
+                # 选择置信度最高的检测结果
+                best_detection = max(detections['ball'], key=lambda x: x['confidence'])
+                bbox = best_detection['bbox']
+                
+                # 更新原始BallTracker
+                self.ball_trackers[0].update(bbox, frame_id)
 
     def _restore_detections(self, detections):
         """
@@ -514,7 +630,7 @@ class BasketballGoalDetectionSystem:
         rim_det = max(detections['rim'], key=lambda x: x['confidence'])
         rim_bbox = rim_det['bbox']
 
-        # 单球追踪：使用已有的BallTracker对象
+        # 单球追踪：使用已有的BallTracker对象（与SORT跟踪器同步）
         ball_tracker = None
         if detections['ball'] and 0 in self.ball_trackers:
             # 使用已有的BallTracker，它包含完整的轨迹和速度信息
@@ -532,6 +648,8 @@ class BasketballGoalDetectionSystem:
         if goal_detected:
             for tracker in self.ball_trackers.values():
                 tracker.clear_trajectory()
+            # 同时清除SORT跟踪器
+            self.sort_tracker.clear()
             self.detection_smoother.reset()
 
         return goal_detected
