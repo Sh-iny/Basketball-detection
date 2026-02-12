@@ -128,6 +128,16 @@ class GoalDetector:
                 # 篮筐下方是网，篮球可以在合理范围内超出水平范围
                 position_valid = below_rim and still_near_x and 3 <= frames_since_above <= 35
                 
+                # 增加穿越条件判断：球的轨迹要从篮筐检测框内部穿过篮筐检测框的左/下/右的边到外边
+                if position_valid and ball_tracker:
+                    # 获取球的轨迹
+                    trajectory = ball_tracker.get_trajectory()
+                    if len(trajectory) >= 2:
+                        # 检查轨迹是否从篮筐内部穿过篮筐的左/下/右边到外边
+                        crossed_rim = self._check_rim_crossing(trajectory, rim_bbox)
+                        if not crossed_rim:
+                            position_valid = False
+                
                 # 严格进球检测（如果启用）
                 if position_valid and self.config['goal_detection'].get('strict_goal_detection', False):
                     strict_valid = True
@@ -286,3 +296,77 @@ class GoalDetector:
     def get_goal_events(self):
         """获取所有进球事件"""
         return self.goal_events
+    
+    def _check_rim_crossing(self, trajectory, rim_bbox):
+        """
+        检查球的轨迹是否从篮筐内部穿过篮筐的左/下/右边到外边
+        
+        Args:
+            trajectory: 球的轨迹点列表 [(x1, y1), (x2, y2), ...]
+            rim_bbox: 篮筐边界框 [x1, y1, x2, y2]
+            
+        Returns:
+            bool: 如果球的轨迹从篮筐内部穿过篮筐的左/下/右边到外边，返回True；否则返回False
+        """
+        rim_x1, rim_y1, rim_x2, rim_y2 = rim_bbox
+        
+        # 检查轨迹中是否有在篮筐内部的点
+        inside_points = []
+        outside_points = []
+        
+        for point in trajectory:
+            x, y = point
+            # 检查点是否在篮筐内部
+            if rim_x1 < x < rim_x2 and rim_y1 < y < rim_y2:
+                inside_points.append(point)
+            else:
+                outside_points.append(point)
+        
+        # 如果没有内部点或外部点，返回False
+        if not inside_points or not outside_points:
+            return False
+        
+        # 检查是否有从内部到外部的穿越
+        # 遍历轨迹，检查相邻点是否有从内部到外部的穿越
+        for i in range(len(trajectory) - 1):
+            prev_x, prev_y = trajectory[i]
+            curr_x, curr_y = trajectory[i+1]
+            
+            # 检查前一点是否在篮筐内部，当前点是否在篮筐外部
+            prev_inside = rim_x1 < prev_x < rim_x2 and rim_y1 < prev_y < rim_y2
+            curr_outside = not (rim_x1 < curr_x < rim_x2 and rim_y1 < curr_y < rim_y2)
+            
+            if prev_inside and curr_outside:
+                # 检查穿越的是左/下/右边
+                # 计算两点之间的线段与篮筐边界的交点
+                crossed_left = self._line_segment_intersects(prev_x, prev_y, curr_x, curr_y, rim_x1, rim_y1, rim_x1, rim_y2)
+                crossed_bottom = self._line_segment_intersects(prev_x, prev_y, curr_x, curr_y, rim_x1, rim_y2, rim_x2, rim_y2)
+                crossed_right = self._line_segment_intersects(prev_x, prev_y, curr_x, curr_y, rim_x2, rim_y1, rim_x2, rim_y2)
+                
+                if crossed_left or crossed_bottom or crossed_right:
+                    return True
+        
+        return False
+    
+    def _line_segment_intersects(self, x1, y1, x2, y2, x3, y3, x4, y4):
+        """
+        检查线段 (x1,y1)-(x2,y2) 是否与线段 (x3,y3)-(x4,y4) 相交
+        
+        Args:
+            x1, y1: 第一条线段的起点
+            x2, y2: 第一条线段的终点
+            x3, y3: 第二条线段的起点
+            x4, y4: 第二条线段的终点
+            
+        Returns:
+            bool: 如果两条线段相交，返回True；否则返回False
+        """
+        def ccw(A, B, C):
+            return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
+        
+        A = (x1, y1)
+        B = (x2, y2)
+        C = (x3, y3)
+        D = (x4, y4)
+        
+        return (ccw(A, C, D) != ccw(B, C, D)) and (ccw(A, B, C) != ccw(A, B, D))
