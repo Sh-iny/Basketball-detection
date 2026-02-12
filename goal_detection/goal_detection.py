@@ -107,14 +107,17 @@ class BasketballGoalDetectionSystem:
             lost_tolerance=3
         )
 
-        # 静止球过滤 - 调整为更宽松的参数
+        # 过滤参数（从配置文件读取）
+        filtering_config = self.config.get('filtering', {})
+        
+        # 静止球过滤
+        self.enable_static_ball_filter = filtering_config.get('enable_static_ball_filter', False)
         self.static_ball_positions = {}  # {位置key: 静止帧数}
-        self.static_threshold = 60  # 静止超过60帧（约2秒）认为是误检
+        self.static_threshold = filtering_config.get('static_threshold', 60)
         self.position_tolerance = 30  # 位置容差（像素）
-
-        # 跳跃检测过滤 - 调整为更宽松的参数
-        self.position_history = []  # 最近3帧的位置 [(cx, cy), ...]
-        self.jump_threshold = 200  # 跳跃距离阈值（像素）
+        
+        # 轨迹跳跃处理：绘制轨迹时断开距离过远的点（不影响检测结果）
+        self.trajectory_jump_threshold = filtering_config.get('trajectory_jump_threshold', 150)
 
     def process_video(self, video_path, output_path=None):
         """
@@ -185,7 +188,7 @@ class BasketballGoalDetectionSystem:
             self._update_trackers(detections, frame_id)
 
             # 进球检测
-            goal_detected = self._detect_goals(detections, frame_id, frame)
+            goal_detected = self._detect_goals(detections, frame_id, frame, fps)
 
             # 可视化（直接使用原始帧，不需要坐标还原）
             if self.annotator:
@@ -200,10 +203,35 @@ class BasketballGoalDetectionSystem:
                     for tracker_id, tracker in self.ball_trackers.items():
                         trajectory = tracker.get_trajectory(traj_length)
                         if len(trajectory) > 1:
-                            # 轨迹点已经是原始尺寸，直接绘制
-                            points = np.array(trajectory, dtype=np.int32)
-                            # 使用原始线条宽度和颜色
-                            cv2.polylines(annotated_frame, [points], False, colors['trajectory'], 2, lineType=cv2.LINE_AA)
+                            # 轨迹分段绘制：当相邻点距离超过阈值时断开连线
+                            segments = []
+                            current_segment = [trajectory[0]]
+                            
+                            for i in range(1, len(trajectory)):
+                                prev_point = trajectory[i-1]
+                                curr_point = trajectory[i]
+                                
+                                # 计算相邻点距离
+                                dist = np.sqrt((curr_point[0] - prev_point[0])**2 + 
+                                              (curr_point[1] - prev_point[1])**2)
+                                
+                                if dist < self.trajectory_jump_threshold:
+                                    # 距离在阈值内，添加到当前段
+                                    current_segment.append(curr_point)
+                                else:
+                                    # 距离超过阈值，保存当前段并开始新段
+                                    if len(current_segment) > 1:
+                                        segments.append(current_segment)
+                                    current_segment = [curr_point]
+                            
+                            # 保存最后一段
+                            if len(current_segment) > 1:
+                                segments.append(current_segment)
+                            
+                            # 绘制所有轨迹段
+                            for segment in segments:
+                                points = np.array(segment, dtype=np.int32)
+                                cv2.polylines(annotated_frame, [points], False, colors['trajectory'], 2, lineType=cv2.LINE_AA)
                 
                 # 绘制光流可视化（仅在使用光流跟踪器时）
                 if self.tracker_type == 'optical_flow':
@@ -298,9 +326,12 @@ class BasketballGoalDetectionSystem:
 
             # 根据类别名称分类
             if class_name in ['ball', 'basketball']:
-                # 应用静止球过滤
+                # 应用静止球过滤（如果启用）
                 cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-                if not self._is_static_ball(cx, cy) and not self._is_jump_detection(cx, cy):
+                skip = False
+                if self.enable_static_ball_filter and self._is_static_ball(cx, cy):
+                    skip = True
+                if not skip:
                     detections['ball'].append(detection)
             elif class_name in ['rim', 'hoop']:
                 detections['rim'].append(detection)
@@ -348,13 +379,9 @@ class BasketballGoalDetectionSystem:
                 'track_id': track_id
             }
 
-            # 静止球过滤
+            # 静止球过滤（如果启用）
             cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-            if self._is_static_ball(cx, cy):
-                continue
-
-            # 跳跃检测过滤
-            if self._is_jump_detection(cx, cy):
+            if self.enable_static_ball_filter and self._is_static_ball(cx, cy):
                 continue
 
             ball_detections.append(detection)
@@ -383,34 +410,6 @@ class BasketballGoalDetectionSystem:
             del self.static_ball_positions[key]
 
         return self.static_ball_positions[pos_key] > self.static_threshold
-
-    def _is_jump_detection(self, cx, cy):
-        """
-        检查是否是跳跃误检
-        如果当前位置突然跳到很远的地方，认为是误检
-        """
-        current_pos = (cx, cy)
-
-        # 历史不足，无法判断
-        if len(self.position_history) < 1:
-            self.position_history.append(current_pos)
-            return False
-
-        # 计算与上一帧的距离
-        prev_pos = self.position_history[-1]
-        dist_to_prev = np.sqrt((cx - prev_pos[0])**2 + (cy - prev_pos[1])**2)
-
-        # 如果跳跃距离超过阈值，认为是误检
-        if dist_to_prev > self.jump_threshold:
-            # 不更新历史，保持原位置
-            return True
-
-        # 更新历史
-        self.position_history.append(current_pos)
-        if len(self.position_history) > 3:
-            self.position_history.pop(0)
-
-        return False
 
     def _parse_rim_detections(self, result):
         """
@@ -511,7 +510,7 @@ class BasketballGoalDetectionSystem:
                 # 保存当前篮球边界框，用于下一帧光流初始化
                 self.prev_ball_bbox = bbox.copy() if hasattr(bbox, 'copy') else list(bbox)
                 
-                if 300 <= frame_id <= 310:
+                if self.debug and 300 <= frame_id <= 310:
                     center_x = (bbox[0] + bbox[2]) / 2
                     center_y = (bbox[1] + bbox[3]) / 2
                     print(f"[调试] 帧 {frame_id}: 使用检测结果位置 = ({center_x:.1f}, {center_y:.1f})")
@@ -531,7 +530,7 @@ class BasketballGoalDetectionSystem:
                 
                 flow_trackers = self.optical_flow_tracker.get_ball_trackers()
                 
-                if 300 <= frame_id <= 310:
+                if self.debug and 300 <= frame_id <= 310:
                     print(f"[调试] 帧 {frame_id}: 无检测结果，光流跟踪器数量 = {len(flow_trackers)}")
                 
                 if flow_trackers:
@@ -539,7 +538,7 @@ class BasketballGoalDetectionSystem:
                     if best_tracker:
                         bbox = best_tracker['bbox']
                         
-                        if 300 <= frame_id <= 310:
+                        if self.debug and 300 <= frame_id <= 310:
                             center_x = (bbox[0] + bbox[2]) / 2
                             center_y = (bbox[1] + bbox[3]) / 2
                             print(f"[调试] 帧 {frame_id}: 使用光流预测位置 = ({center_x:.1f}, {center_y:.1f})")
@@ -557,7 +556,7 @@ class BasketballGoalDetectionSystem:
             sort_trackers = self.sort_tracker.get_ball_trackers()
             
             # 调试信息：打印300-310帧的跟踪情况
-            if 300 <= frame_id <= 310:
+            if self.debug and 300 <= frame_id <= 310:
                 print(f"[调试] 帧 {frame_id}: SORT跟踪器数量 = {len(sort_trackers)}")
                 print(f"[调试] 帧 {frame_id}: 检测到的篮球数量 = {len(detections['ball'])}")
                 for i, ball_det in enumerate(detections['ball']):
@@ -579,7 +578,7 @@ class BasketballGoalDetectionSystem:
                 best_tracker = sort_trackers[best_track_id]
                 
                 # 调试信息：打印300-310帧的最佳跟踪器
-                if 300 <= frame_id <= 310:
+                if self.debug and 300 <= frame_id <= 310:
                     bbox = best_tracker['bbox']
                     center_x = (bbox[0] + bbox[2]) / 2
                     center_y = (bbox[1] + bbox[3]) / 2
@@ -593,7 +592,7 @@ class BasketballGoalDetectionSystem:
                 self.ball_trackers[0].update(best_tracker['bbox'], frame_id)
                 
                 # 调试信息：打印300-310帧的BallTracker轨迹状态
-                if 300 <= frame_id <= 310:
+                if self.debug and 300 <= frame_id <= 310:
                     trajectory = self.ball_trackers[0].get_trajectory()
                     print(f"[调试] 帧 {frame_id}: BallTracker轨迹长度 = {len(trajectory)}")
                     if len(trajectory) > 1:
@@ -603,12 +602,12 @@ class BasketballGoalDetectionSystem:
                         print(f"[调试] 帧 {frame_id}: 轨迹最后两点 = ({prev_pos[0]:.1f}, {prev_pos[1]:.1f}) -> ({last_pos[0]:.1f}, {last_pos[1]:.1f}) 距离 = {distance:.2f}")
             else:
                 # 如果SORT跟踪器没有返回结果
-                if 300 <= frame_id <= 310:
+                if self.debug and 300 <= frame_id <= 310:
                     print(f"[调试] 帧 {frame_id}: SORT跟踪器没有返回结果")
                 
                 # 关键修复：如果有新的检测结果，直接使用检测结果更新BallTracker
                 if detections['ball']:
-                    if 300 <= frame_id <= 310:
+                    if self.debug and 300 <= frame_id <= 310:
                         print(f"[调试] 帧 {frame_id}: 有新的检测结果，直接使用检测结果更新BallTracker")
                     # 选择置信度最高的检测结果
                     best_detection = max(detections['ball'], key=lambda x: x['confidence'])
@@ -621,7 +620,7 @@ class BasketballGoalDetectionSystem:
                     # 直接使用检测结果更新BallTracker
                     self.ball_trackers[0].update(bbox, frame_id)
                     
-                    if 300 <= frame_id <= 310:
+                    if self.debug and 300 <= frame_id <= 310:
                         center_x = (bbox[0] + bbox[2]) / 2
                         center_y = (bbox[1] + bbox[3]) / 2
                         print(f"[调试] 帧 {frame_id}: 使用检测结果位置 = ({center_x:.1f}, {center_y:.1f})")
@@ -645,7 +644,7 @@ class BasketballGoalDetectionSystem:
                                 ]
                                 # 只在连续丢失帧数较少时使用稳定预测
                                 if hasattr(self.ball_trackers[0], 'lost_frames') and self.ball_trackers[0].lost_frames < 3:
-                                    if 300 <= frame_id <= 310:
+                                    if self.debug and 300 <= frame_id <= 310:
                                         print(f"[调试] 帧 {frame_id}: 使用稳定预测位置 = ({last_pos[0]:.1f}, {last_pos[1]:.1f})")
                                     self.ball_trackers[0].update(stable_bbox, frame_id)
         else:
@@ -683,7 +682,7 @@ class BasketballGoalDetectionSystem:
 
         return restored
 
-    def _detect_goals(self, detections, frame_id, frame=None):
+    def _detect_goals(self, detections, frame_id, frame=None, fps=30):
         """
         执行进球检测（单球追踪模式）
 
@@ -691,17 +690,19 @@ class BasketballGoalDetectionSystem:
             detections: 检测结果
             frame_id: 帧ID
             frame: 原始帧（用于颜色直方图检测）
+            fps: 视频帧率
 
         Returns:
             bool: 是否检测到进球
         """
-        # 必须检测到篮筐
-        if not detections['rim']:
-            return False
-
-        # 使用置信度最高的篮筐
-        rim_det = max(detections['rim'], key=lambda x: x['confidence'])
-        rim_bbox = rim_det['bbox']
+        # 使用置信度最高的篮筐（如果有检测）
+        rim_bbox = None
+        if detections['rim']:
+            rim_det = max(detections['rim'], key=lambda x: x['confidence'])
+            rim_bbox = rim_det['bbox']
+        else:
+            # 没有篮筐检测，使用历史位置（由goal_detector内部处理）
+            pass
 
         # 单球追踪：使用已有的BallTracker对象（与SORT跟踪器同步）
         ball_tracker = None
@@ -715,7 +716,7 @@ class BasketballGoalDetectionSystem:
             ball_tracker.update(best_ball['bbox'], frame_id)
 
         # 调用进球检测
-        goal_detected = self.goal_detector.check_goal(ball_tracker, rim_bbox, frame_id, frame)
+        goal_detected = self.goal_detector.check_goal(ball_tracker, rim_bbox, frame_id, frame, fps)
 
         # 进球后清除轨迹和重置平滑器
         if goal_detected:

@@ -28,11 +28,30 @@ class GoalDetector:
         # 球和篮筐半径记录
         self.ball_radius_history = deque(maxlen=10)  # 球半径历史
         self.rim_radius_history = deque(maxlen=10)  # 篮筐半径历史
+        
+        # 篮筐位置历史（用于检测失败时）
+        self.rim_bbox_history = deque(maxlen=5)  # 最近5次篮筐边界框
+        self.rim_center_history = deque(maxlen=5)  # 最近5次篮筐中心点
 
-    def check_goal(self, ball_tracker, rim_bbox, frame_id, frame=None):
+    def check_goal(self, ball_tracker, rim_bbox, frame_id, frame=None, fps=30):
         cooldown = self.config['goal_detection']['cooldown_frames']
         if frame_id - self.last_goal_frame < cooldown:
             return False
+
+        # 处理篮筐检测失败的情况
+        if rim_bbox is None:
+            # 使用历史篮筐位置
+            if self.rim_bbox_history:
+                rim_bbox = self.rim_bbox_history[-1]  # 使用最近的篮筐位置
+                print(f"[进球检测] 帧 {frame_id}: 使用历史篮筐位置")
+            else:
+                # 没有历史位置，无法检测进球
+                return False
+        else:
+            # 更新篮筐位置历史
+            self.rim_bbox_history.append(rim_bbox)
+            rim_center = ((rim_bbox[0] + rim_bbox[2]) / 2, (rim_bbox[1] + rim_bbox[3]) / 2)
+            self.rim_center_history.append(rim_center)
 
         rim_center_y = (rim_bbox[1] + rim_bbox[3]) / 2
         rim_center_x = (rim_bbox[0] + rim_bbox[2]) / 2
@@ -52,10 +71,36 @@ class GoalDetector:
             ball_y = ball_tracker.current_position[1]
 
             # 检查球是否在篮筐水平范围内
-            near_rim_x = abs(ball_x - rim_center_x) < rim_width * 1.5
+            # 使用篮筐宽度的1.5倍作为水平范围，确保篮球确实在篮筐附近
+            max_horizontal_offset = rim_width * 1.5
+            near_rim_x = abs(ball_x - rim_center_x) < max_horizontal_offset
 
             # 记录球在篮筐上方且水平接近的位置
-            if ball_y < rim_center_y and near_rim_x:
+            # 只有当篮球在篮筐水平范围内时，才记录其在篮筐上方的位置
+            # 这样可以避免远处的篮球被误检为进球
+            # 球的中心点应该在篮筐顶部的内部靠里一点点，可以是篮球半径的一个比例
+            # 计算篮筐的水平边界
+            rim_left = rim_center_x - rim_width / 2
+            rim_right = rim_center_x + rim_width / 2
+            
+            # 检查球是否在篮筐水平范围内，使用篮球半径的比例作为容错
+            # 这样可以确保球确实在篮筐内部或非常接近
+            # 球的中心点应该在篮筐顶部的内部靠里一点点，可以是篮球半径的一个比例
+            ball_radius = ball_tracker.get_average_radius() if ball_tracker else 0
+            
+            # 计算篮筐的实际水平范围，考虑篮球的大小
+            # 只有当篮球的中心在篮筐内部时才考虑为可能的进球
+            # 使用配置文件中的有效水平范围比例，确保球确实在篮筐内部
+            effective_rim_width_ratio = self.config['goal_detection'].get('effective_rim_width_ratio', 0.8)
+            effective_rim_width = rim_width * effective_rim_width_ratio
+            effective_rim_left = rim_center_x - effective_rim_width / 2
+            effective_rim_right = rim_center_x + effective_rim_width / 2
+            
+            # 球的中心必须在篮筐的有效水平范围内
+            in_rim_horizontal = effective_rim_left < ball_x < effective_rim_right
+            
+            # 球的Y坐标小于篮筐顶部的Y坐标
+            if ball_y < rim_bbox[1] and in_rim_horizontal:
                 self.last_above_rim_y = ball_y
                 self.last_above_rim_frame = frame_id
                 self.last_above_rim_x = ball_x
@@ -63,12 +108,40 @@ class GoalDetector:
             # 检查进球
             if self.last_above_rim_y is not None:
                 frames_since_above = frame_id - self.last_above_rim_frame
-                below_rim = ball_y > rim_center_y + rim_height
-                still_near_x = abs(ball_x - rim_center_x) < rim_width * 2
-
-                # 球从上方到下方，间隔合理，且水平位置接近
-                # 加入颜色直方图变化作为辅助验证
+                
+                # 获取篮筐下部区间范围参数
+                rim_bottom_offset_ratio = self.config['goal_detection'].get('rim_bottom_offset_ratio', 0.0)
+                max_horizontal_offset_ratio = self.config['goal_detection'].get('max_horizontal_offset_ratio', 2.0)
+                
+                # 计算篮筐底部位置，考虑垂直偏移
+                rim_bottom = rim_bbox[3] + rim_bottom_offset_ratio * rim_height
+                # 球的Y坐标大于篮筐底部的Y坐标
+                below_rim = ball_y > rim_bottom
+                
+                # 篮球在篮筐下方可以超出水平范围，但有一定限制
+                # 使用篮筐半径的一定比例作为水平范围限制
+                # 这样既允许篮球在网内移动，又避免检测到太远的误检
+                max_horizontal_offset = rim_width * max_horizontal_offset_ratio  # 篮筐宽度的倍数作为最大水平偏移
+                still_near_x = abs(ball_x - rim_center_x) < max_horizontal_offset
+                
+                # 篮球只需要在篮筐顶部的内部（上方时在水平范围内）
+                # 篮筐下方是网，篮球可以在合理范围内超出水平范围
                 position_valid = below_rim and still_near_x and 3 <= frames_since_above <= 35
+                
+                # 严格进球检测（如果启用）
+                if position_valid and self.config['goal_detection'].get('strict_goal_detection', False):
+                    strict_valid = True
+                    
+                    # 只检查垂直方向穿透（篮球在篮筐下方时可以超出水平范围）
+                    vertical_threshold = self.config['goal_detection'].get('vertical_penetration_threshold', 0.3)
+                    # 球必须穿透篮筐足够深度
+                    vertical_penetration = (ball_y - rim_center_y) / rim_height
+                    if vertical_penetration < vertical_threshold:
+                        strict_valid = False
+                    
+                    # 如果严格检测失败，位置验证也失败
+                    if not strict_valid:
+                        position_valid = False
 
                 if position_valid:
                     # 检测水平速度变化
@@ -110,14 +183,28 @@ class GoalDetector:
                                 vx, vy, _ = ball_tracker.get_velocity()
                                 current_horizontal_velocity = abs(vx)
                                 
-                                # 获取配置参数
-                                min_horizontal_velocity = self.config['goal_detection'].get('min_horizontal_velocity_for_change_detection', 0.5)
+                                # 获取配置参数（相对于篮筐宽度/帧）
+                                min_horizontal_velocity_ratio = self.config['goal_detection'].get('min_horizontal_velocity_for_change_detection', 0.02)  # 改为相对于篮筐宽度的比例
+                                
+                                # 考虑帧率的影响，标准化到30fps
+                                fps_normalization = 30.0 / fps
+                                
+                                # 将相对速度阈值转换为像素/帧，并考虑帧率
+                                min_horizontal_velocity = min_horizontal_velocity_ratio * rim_width * fps_normalization
                                 
                                 # 只有当水平速度达到阈值时才启动速度变化检测
                                 if current_horizontal_velocity >= min_horizontal_velocity:
-                                    # 获取速度变化检测参数
-                                    velocity_change_threshold = self.config['goal_detection'].get('horizontal_velocity_change_threshold', 0.3)
-                                    velocity_change_window = self.config['goal_detection'].get('velocity_change_window', 3)
+                                    # 获取速度变化检测参数（相对于篮筐宽度/帧）
+                                    velocity_change_threshold_ratio = self.config['goal_detection'].get('horizontal_velocity_change_threshold', 0.01)  # 改为相对于篮筐宽度的比例
+                                    
+                                    # 将相对速度变化阈值转换为像素/帧，并考虑帧率
+                                    velocity_change_threshold = velocity_change_threshold_ratio * rim_width * fps_normalization
+                                    
+                                    # 修改：使用位置检测的时间范围来计算速度变化
+                                    # 从球在篮筐上方的最后一个点到当前帧
+                                    velocity_change_window = frames_since_above
+                                    if velocity_change_window < 2:
+                                        velocity_change_window = 2
                                     
                                     velocity_change = ball_tracker.get_velocity_change(window=velocity_change_window)
                                     # 速度变化合理（球被篮筐阻挡）

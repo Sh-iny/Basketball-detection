@@ -28,7 +28,7 @@ tracking:
 # 进球检测参数
 goal_detection:
   rim_expansion_ratio: 1.2     # 篮筐区域扩展比例
-  min_velocity_threshold: 2.0  # 最小速度阈值
+  min_velocity_threshold: 0.01  # 最小速度阈值（篮筐宽度/帧）
   consecutive_frames: 3        # 连续帧数要求
   cooldown_frames: 60          # 进球冷却帧数
   vertical_threshold: 0.3      # 垂直方向阈值

@@ -1,52 +1,101 @@
+# ============================================================
 # 篮球进球检测系统配置文件
+# ============================================================
 
-# 模型配置（单YOLO系统）
+# ------------------------------------------------------------
+# 模型配置
+# ------------------------------------------------------------
 models:
-  path: "models/BR2/weights/best.pt"  # 单模型路径
-  confidence: 0.5            # 置信度阈值（与predict_video_mp4.py一致）
-  rim_update_interval: 5     # 篮筐检测更新间隔（每5帧）
-  rim_smooth_window: 3       # 篮筐检测平滑窗口
+  path: "models/BR2/weights/best.pt"  # YOLO模型路径
+  confidence: 0.5                     # 检测置信度阈值（0-1，越高越严格）
+  rim_update_interval: 5              # 篮筐检测更新间隔（帧数，篮筐位置相对固定，可以间隔更新）
+  rim_smooth_window: 3                # 篮筐位置平滑窗口（帧数，用于稳定篮筐检测）
 
+# ------------------------------------------------------------
 # 检测参数
+# ------------------------------------------------------------
 detection:
-  confidence_threshold: 0.5    # 置信度阈值（与predict_video_mp4.py一致）
-  iou_threshold: 0.7           # IoU阈值
+  confidence_threshold: 0.5           # 检测置信度阈值（0-1）
+  iou_threshold: 0.7                  # NMS的IoU阈值（0-1，用于去除重叠检测框）
 
-# 跟踪参数
+# ------------------------------------------------------------
+# 过滤参数（用于过滤误检）
+# ------------------------------------------------------------
+filtering:
+  # 静止球过滤：过滤长时间不动的检测（可能是背景误检）
+  enable_static_ball_filter: false    # 是否启用静止球过滤
+  static_threshold: 60                # 静止帧数阈值（连续多少帧不动则过滤）
+  
+  # 轨迹跳跃处理：绘制轨迹时断开距离过远的点（不影响检测结果）
+  trajectory_jump_threshold: 150      # 轨迹跳跃阈值（像素，相邻轨迹点距离超过此值则断开连线）
+
+# ------------------------------------------------------------
+# 跟踪参数（SORT跟踪器使用）
+# ------------------------------------------------------------
 tracking:
-  tracker_type: "botsort"      # 跟踪器类型 (botsort/bytetrack)
-  max_age: 30                  # 最大丢失帧数
-  min_hits: 3                  # 最小命中次数
+  tracker_type: "botsort"             # 跟踪器类型（botsort/bytetrack，暂未使用）
+  max_age: 30                         # 跟踪器最大存活帧数（丢失多少帧后删除）
+  min_hits: 3                         # 确认跟踪所需的最小命中次数
 
+# ------------------------------------------------------------
 # 进球检测参数
+# ------------------------------------------------------------
 goal_detection:
-  rim_expansion_ratio: 1.2     # 篮筐区域扩展比例
-  min_velocity_threshold: 2.0  # 最小速度阈值（像素/帧）
-  consecutive_frames: 3        # 连续帧数要求
-  cooldown_frames: 5           # 进球冷却帧数
-  vertical_threshold: 0.3      # 垂直方向阈值
-  horizontal_velocity_change_threshold: 0.3  # 水平速度变化阈值（像素/帧）- 降低以提高灵敏度
-  velocity_change_window: 3     # 速度变化检测窗口（帧数）- 增加以提高稳定性
-  min_horizontal_velocity_for_change_detection: 0.5  # 启动速度变化检测的最小水平速度（像素/帧）- 降低以提高灵敏度
+  rim_expansion_ratio: 1.5            # 篮筐区域扩展比例（用于判断球是否在篮筐附近）
+  cooldown_frames: 5                  # 进球冷却帧数（两次进球之间的最小间隔）
+  
+  # ===== 速度相关参数说明 =====
+  # 1. min_velocity_threshold: 用于判断球是否有足够速度
+  # 2. horizontal_velocity_change_threshold: 用于检测球与篮筐碰撞后的速度变化
+  # 3. min_horizontal_velocity_for_change_detection: 启动碰撞检测的最小水平速度
+  # ==================================
+  
+  min_velocity_threshold: 0.1       # 进球检测启动速度阈值（篮筐宽度/帧，球速低于此值可能不检测进球）
+  
+  # 碰撞检测参数（用于检测球与篮筐边缘碰撞后的进球）
+  horizontal_velocity_change_threshold: 0.1    # 水平速度变化阈值（篮筐宽度/帧，碰撞后速度变化超过此值视为进球）
+  velocity_change_window: 3                     # 速度变化检测窗口（帧数，计算速度变化的时间范围）
+  min_horizontal_velocity_for_change_detection: 0.02  # 启动碰撞检测的最小水平速度（篮筐宽度/帧，球水平速度低于此值不检测碰撞）
+  
+  # 其他参数
+  consecutive_frames: 3               # 连续帧数要求（球需要连续多少帧在篮筐附近）
+  vertical_threshold: 0.3             # 垂直方向阈值（用于判断球的垂直运动）
+  
+  # 篮球进入篮筐的严格判断
+  strict_goal_detection: true           # 是否启用严格进球检测
+  ball_center_in_rim: true              # 篮球中心点必须在篮筐内部
+  min_distance_from_rim_edge: 0       # 篮球中心点到篮筐边缘的最小距离（篮球半径的比例）
+  vertical_penetration_threshold: 0.3   # 垂直方向穿透阈值（篮筐高度比例）
+  
+  # 篮筐上方有效水平范围参数
+  effective_rim_width_ratio: 0.8        # 篮筐有效水平范围比例（篮筐宽度的百分比，用于判断球是否在篮筐内部）
+  
+  # 篮筐下部区间范围参数
+  rim_bottom_offset_ratio: 0.0         # 篮筐下部垂直偏移比例（篮筐高度的比例，用于判断球是否在篮筐下方）
+  max_horizontal_offset_ratio: 1.5      # 篮筐下部最大水平偏移比例（篮筐宽度的倍数，用于判断球是否在篮筐下方的水平范围内）
 
+# ------------------------------------------------------------
 # 可视化参数
+# ------------------------------------------------------------
 visualization:
-  draw_tracks: true            # 是否绘制跟踪框
-  draw_trajectory: true        # 是否绘制轨迹
-  trajectory_length: 30        # 轨迹长度（帧数）
-  goal_highlight_duration: 90  # 进球高亮持续帧数（约3秒@30fps）
+  draw_tracks: true                   # 是否绘制检测框
+  draw_trajectory: true               # 是否绘制轨迹
+  trajectory_length: 30               # 轨迹长度（帧数）
+  goal_highlight_duration: 90         # 进球高亮持续帧数（约3秒@30fps）
 
-  # 颜色配置 (BGR格式)
+  # 颜色配置 (BGR格式: [蓝, 绿, 红])
   colors:
-    ball: [0, 255, 0]          # 篮球 - 绿色
-    rim: [255, 0, 0]           # 篮筐 - 蓝色
-    people: [0, 255, 255]      # 人 - 黄色
-    trajectory: [0, 255, 255]  # 轨迹 - 黄色
-    goal_event: [0, 0, 255]    # 进球事件 - 红色
+    ball: [0, 255, 0]                 # 篮球 - 绿色
+    rim: [255, 0, 0]                  # 篮筐 - 蓝色
+    people: [0, 255, 255]             # 人 - 黄色
+    trajectory: [0, 255, 255]         # 轨迹 - 黄色
+    goal_event: [0, 0, 255]           # 进球事件 - 红色
 
+# ------------------------------------------------------------
 # 输出参数
+# ------------------------------------------------------------
 output:
-  save_video: true             # 是否保存视频
-  save_statistics: true        # 是否保存统计信息
-  save_events_json: true       # 是否保存事件JSON
-  output_dir: "runs/goal_detection"  # 输出目录
+  save_video: true                    # 是否保存输出视频
+  save_statistics: true               # 是否保存统计信息CSV
+  save_events_json: true              # 是否保存进球事件JSON
+  output_dir: "runs/goal_detection"   # 输出目录

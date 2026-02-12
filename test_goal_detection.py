@@ -15,17 +15,18 @@ sys.path.insert(0, str(Path(__file__).parent))
 from goal_detection.goal_detection import BasketballGoalDetectionSystem
 
 
-def test_goal_detection_system(tracker_type='sort'):
+def test_goal_detection_system(tracker_type='sort', debug=False):
     """
     测试修改后的进球检测系统
     
     Args:
         tracker_type: 跟踪器类型 ('sort', 'optical_flow', 'original')
+        debug: 是否开启调试模式
     """
     model_path = "models/BR2/weights/best.pt"
-    video_path = "test/basketball2.mp4"
+    video_path = "test/basketball3.mp4"
     config_path = "goal_detection/config/goal_detection_config.yaml"
-    output_path = f"runs/test_goal_detection/output_{tracker_type}.mp4"
+    output_path = f"runs/test_goal_detection/output3_{tracker_type}.mp4"
     
     if not Path(model_path).exists():
         print(f"错误: 模型文件不存在: {model_path}")
@@ -61,7 +62,7 @@ def test_goal_detection_system(tracker_type='sort'):
         system = BasketballGoalDetectionSystem(
             model_path=model_path,
             config_path=config_path,
-            debug=True,
+            debug=debug,
             tracker_type=tracker_type
         )
         
@@ -122,6 +123,8 @@ if __name__ == "__main__":
     parser.add_argument('--tracker', type=str, default='sort',
                         choices=['sort', 'optical_flow', 'original', 'all'],
                         help='跟踪器类型: sort, optical_flow, original, 或 all (比较所有)')
+    parser.add_argument('--debug', action='store_true',
+                        help='开启调试模式，输出详细检测统计')
     
     args = parser.parse_args()
     
@@ -132,7 +135,7 @@ if __name__ == "__main__":
     if args.tracker == 'all':
         compare_all_trackers()
     else:
-        test_goal_detection_system(args.tracker)
+        test_goal_detection_system(args.tracker, args.debug)
     
     print("\n测试完成！")
     print("重点关注:")
