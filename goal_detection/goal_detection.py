@@ -17,6 +17,7 @@ from .visualizer.video_annotator import VideoAnnotator
 from .utils.video_preprocessor import VideoPreprocessor, DetectionSmoother
 from .tracker.ball_tracker import BallTracker
 from .tracker.sort_tracker import BasketballSORTTracker
+from .tracker.optical_flow_tracker import BasketballOpticalFlowTracker
 
 
 class SimpleTracker:
@@ -45,7 +46,7 @@ class BasketballGoalDetectionSystem:
             model_path: 检测模型路径（同时检测篮球和篮筐）
             config_path: 配置文件路径
             debug: 是否开启调试模式
-            tracker_type: 跟踪器类型 ('sort' 或 'original')
+            tracker_type: 跟踪器类型 ('sort', 'optical_flow' 或 'original')
         """
         # 加载配置
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -70,14 +71,25 @@ class BasketballGoalDetectionSystem:
             min_hits=2,  # 减少最小命中次数，更快开始跟踪
             iou_threshold=0.25  # 降低IoU阈值，提高匹配成功率
         )
+        self.optical_flow_tracker = BasketballOpticalFlowTracker(
+            max_lost_frames=15,
+            min_features=3
+        )
         self.tracker_type = tracker_type
         self.annotator = None
         self.debug = debug
+        self.current_frame = None  # 存储当前帧，用于光流跟踪
+        self.prev_ball_bbox = None  # 存储上一帧的篮球边界框，用于光流跟踪初始化
 
         # 类别映射
         self.class_names = self.model.names
         print(f"模型类别: {self.class_names}")
-        print(f"使用跟踪器: {'SORT' if tracker_type == 'sort' else 'Original BallTracker'}")
+        tracker_name = {
+            'sort': 'SORT',
+            'optical_flow': 'Optical Flow',
+            'original': 'Original BallTracker'
+        }
+        print(f"使用跟踪器: {tracker_name.get(tracker_type, tracker_type)}")
 
         # 调试统计
         if self.debug:
@@ -135,6 +147,9 @@ class BasketballGoalDetectionSystem:
             if not ret:
                 break
 
+            # 存储当前帧，用于光流跟踪
+            self.current_frame = frame
+
             # 直接使用原始帧进行检测（与 predict_video_mp4.py 一致）
             # 不进行预处理，保持原始帧质量
 
@@ -189,6 +204,10 @@ class BasketballGoalDetectionSystem:
                             points = np.array(trajectory, dtype=np.int32)
                             # 使用原始线条宽度和颜色
                             cv2.polylines(annotated_frame, [points], False, colors['trajectory'], 2, lineType=cv2.LINE_AA)
+                
+                # 绘制光流可视化（仅在使用光流跟踪器时）
+                if self.tracker_type == 'optical_flow':
+                    annotated_frame = self.optical_flow_tracker.draw_all_optical_flow(annotated_frame, draw_best_only=True)
                 
                 # 叠加进球检测结果
                 if goal_detected or self._is_in_goal_highlight_period(frame_id):
@@ -476,7 +495,61 @@ class BasketballGoalDetectionSystem:
             detections: 检测结果
             frame_id: 帧ID
         """
-        if self.tracker_type == 'sort':
+        if self.tracker_type == 'optical_flow':
+            if self.current_frame is None:
+                return
+            
+            # 策略：优先使用检测结果，光流跟踪器用于填补检测间隙
+            if detections['ball']:
+                # 有检测结果时，清除光流跟踪器（不显示光流可视化）
+                self.optical_flow_tracker.clear()
+                
+                # 使用置信度最高的检测结果
+                best_detection = max(detections['ball'], key=lambda x: x['confidence'])
+                bbox = best_detection['bbox']
+                
+                # 保存当前篮球边界框，用于下一帧光流初始化
+                self.prev_ball_bbox = bbox.copy() if hasattr(bbox, 'copy') else list(bbox)
+                
+                if 300 <= frame_id <= 310:
+                    center_x = (bbox[0] + bbox[2]) / 2
+                    center_y = (bbox[1] + bbox[3]) / 2
+                    print(f"[调试] 帧 {frame_id}: 使用检测结果位置 = ({center_x:.1f}, {center_y:.1f})")
+                
+                if 0 not in self.ball_trackers:
+                    self.ball_trackers[0] = BallTracker(0)
+                
+                self.ball_trackers[0].update(bbox, frame_id)
+            else:
+                # 没有检测结果时，使用光流跟踪器预测
+                # 如果光流跟踪器为空，使用上一帧的篮球位置初始化
+                if len(self.optical_flow_tracker.trackers) == 0 and self.prev_ball_bbox is not None:
+                    gray_frame = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2GRAY) if len(self.current_frame.shape) == 3 else self.current_frame
+                    self.optical_flow_tracker.init_tracker(gray_frame, self.prev_ball_bbox)
+                
+                self.optical_flow_tracker.update(self.current_frame, [])
+                
+                flow_trackers = self.optical_flow_tracker.get_ball_trackers()
+                
+                if 300 <= frame_id <= 310:
+                    print(f"[调试] 帧 {frame_id}: 无检测结果，光流跟踪器数量 = {len(flow_trackers)}")
+                
+                if flow_trackers:
+                    best_tracker = self.optical_flow_tracker.get_best_tracker()
+                    if best_tracker:
+                        bbox = best_tracker['bbox']
+                        
+                        if 300 <= frame_id <= 310:
+                            center_x = (bbox[0] + bbox[2]) / 2
+                            center_y = (bbox[1] + bbox[3]) / 2
+                            print(f"[调试] 帧 {frame_id}: 使用光流预测位置 = ({center_x:.1f}, {center_y:.1f})")
+                        
+                        if 0 not in self.ball_trackers:
+                            self.ball_trackers[0] = BallTracker(0)
+                        
+                        self.ball_trackers[0].update(bbox, frame_id)
+        
+        elif self.tracker_type == 'sort':
             # 使用SORT跟踪器更新（无论是否有新的检测结果）
             self.sort_tracker.update(detections['ball'])
             
@@ -648,8 +721,9 @@ class BasketballGoalDetectionSystem:
         if goal_detected:
             for tracker in self.ball_trackers.values():
                 tracker.clear_trajectory()
-            # 同时清除SORT跟踪器
+            # 同时清除SORT跟踪器和光流跟踪器
             self.sort_tracker.clear()
+            self.optical_flow_tracker.clear()
             self.detection_smoother.reset()
 
         return goal_detected
