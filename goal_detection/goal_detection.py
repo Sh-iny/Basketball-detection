@@ -80,6 +80,7 @@ class BasketballGoalDetectionSystem:
         self.debug = debug
         self.current_frame = None  # 存储当前帧，用于光流跟踪
         self.prev_ball_bbox = None  # 存储上一帧的篮球边界框，用于光流跟踪初始化
+        self.debug_frame_range = None  # 调试帧范围，用于详细输出特定时间段的信息
 
         # 类别映射
         self.class_names = self.model.names
@@ -715,6 +716,46 @@ class BasketballGoalDetectionSystem:
             ball_tracker = BallTracker(0)
             ball_tracker.update(best_ball['bbox'], frame_id)
 
+        # 详细调试输出
+        if self.debug_frame_range and self.debug_frame_range[0] <= frame_id <= self.debug_frame_range[1]:
+            print(f"\n[详细调试] 帧 {frame_id}")
+            print(f"检测到的球数量: {len(detections['ball'])}")
+            print(f"检测到的篮筐数量: {len(detections['rim'])}")
+            
+            # 输出球的位置信息
+            if detections['ball']:
+                best_ball = max(detections['ball'], key=lambda x: x['confidence'])
+                bbox = best_ball['bbox']
+                ball_x = (bbox[0] + bbox[2]) / 2
+                ball_y = (bbox[1] + bbox[3]) / 2
+                print(f"球的位置: ({ball_x:.1f}, {ball_y:.1f})")
+                print(f"球的置信度: {best_ball['confidence']:.2f}")
+            
+            # 输出篮筐的位置信息
+            if detections['rim']:
+                rim_det = max(detections['rim'], key=lambda x: x['confidence'])
+                rim_bbox = rim_det['bbox']
+                rim_x1, rim_y1, rim_x2, rim_y2 = rim_bbox
+                rim_center_x = (rim_x1 + rim_x2) / 2
+                rim_center_y = (rim_y1 + rim_y2) / 2
+                rim_width = rim_x2 - rim_x1
+                rim_height = rim_y2 - rim_y1
+                print(f"篮筐位置: [{rim_x1:.1f}, {rim_y1:.1f}, {rim_x2:.1f}, {rim_y2:.1f}]")
+                print(f"篮筐中心: ({rim_center_x:.1f}, {rim_center_y:.1f})")
+                print(f"篮筐尺寸: 宽={rim_width:.1f}, 高={rim_height:.1f}")
+                print(f"篮筐置信度: {rim_det['confidence']:.2f}")
+            
+            # 输出BallTracker的轨迹信息
+            if ball_tracker:
+                trajectory = ball_tracker.get_trajectory()
+                print(f"BallTracker轨迹长度: {len(trajectory)}")
+                if len(trajectory) > 0:
+                    print(f"轨迹最近点: ({trajectory[-1][0]:.1f}, {trajectory[-1][1]:.1f})")
+                
+                # 输出速度信息
+                vx, vy, _ = ball_tracker.get_velocity()
+                print(f"球的速度: vx={vx:.2f}, vy={vy:.2f}")
+        
         # 调用进球检测
         goal_detected = self.goal_detector.check_goal(ball_tracker, rim_bbox, frame_id, frame, fps)
 

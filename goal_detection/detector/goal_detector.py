@@ -124,19 +124,53 @@ class GoalDetector:
                 max_horizontal_offset = rim_width * max_horizontal_offset_ratio  # 篮筐宽度的倍数作为最大水平偏移
                 still_near_x = abs(ball_x - rim_center_x) < max_horizontal_offset
                 
-                # 篮球只需要在篮筐顶部的内部（上方时在水平范围内）
-                # 篮筐下方是网，篮球可以在合理范围内超出水平范围
-                position_valid = below_rim and still_near_x and 3 <= frames_since_above <= 35
-                
-                # 增加穿越条件判断：球的轨迹要从篮筐检测框内部穿过篮筐检测框的左/下/右的边到外边
-                if position_valid and ball_tracker:
+                # 修改：完全基于轨迹进行位置和穿越检测
+                if ball_tracker:
                     # 获取球的轨迹
                     trajectory = ball_tracker.get_trajectory()
                     if len(trajectory) >= 2:
-                        # 检查轨迹是否从篮筐内部穿过篮筐的左/下/右边到外边
-                        crossed_rim = self._check_rim_crossing(trajectory, rim_bbox)
-                        if not crossed_rim:
-                            position_valid = False
+                        # 基于轨迹进行位置检测：检查轨迹是否有从篮筐上方到下方的变化
+                        position_valid = self._check_position_change(trajectory, rim_bbox, frames_since_above, frame_id)
+                        
+                        # 基于轨迹进行穿越检测：检查轨迹是否从篮筐内部穿过篮筐的左/下/右的边到外边
+                        if position_valid:
+                            crossed_rim = self._check_rim_crossing(trajectory, rim_bbox)
+                            if not crossed_rim:
+                                position_valid = False
+                        
+                        # 详细调试输出
+                        if 990 <= frame_id <= 1020:
+                            print(f"[轨迹分析] 帧 {frame_id}")
+                            print(f"轨迹长度: {len(trajectory)}")
+                            print(f"位置检测结果: {'有效' if position_valid else '无效'}")
+                            if position_valid:
+                                print(f"穿越检测结果: {'有效' if crossed_rim else '无效'}")
+                            
+                            # 输出轨迹的前几个点和后几个点
+                            print(f"轨迹前3点: {[(round(p[0],1), round(p[1],1)) for p in trajectory[:3]]}")
+                            print(f"轨迹后3点: {[(round(p[0],1), round(p[1],1)) for p in trajectory[-3:]]}")
+                            
+                            # 输出篮筐位置和尺寸
+                            rim_x1, rim_y1, rim_x2, rim_y2 = rim_bbox
+                            rim_center_x = (rim_x1 + rim_x2) / 2
+                            rim_center_y = (rim_y1 + rim_y2) / 2
+                            rim_width = rim_x2 - rim_x1
+                            rim_height = rim_y2 - rim_y1
+                            print(f"篮筐位置: [{rim_x1:.1f}, {rim_y1:.1f}, {rim_x2:.1f}, {rim_y2:.1f}]")
+                            print(f"篮筐中心: ({rim_center_x:.1f}, {rim_center_y:.1f})")
+                            print(f"篮筐尺寸: 宽={rim_width:.1f}, 高={rim_height:.1f}")
+                            
+                            # 输出球的当前位置
+                            ball_x = ball_tracker.current_position[0]
+                            ball_y = ball_tracker.current_position[1]
+                            print(f"球的当前位置: ({ball_x:.1f}, {ball_y:.1f})")
+                            print(f"球在篮筐上方: {'是' if ball_y < rim_y1 else '否'}")
+                            print(f"球在篮筐下方: {'是' if ball_y > (rim_y2 + rim_height * self.config['goal_detection'].get('rim_bottom_offset_ratio', 0.0)) else '否'}")
+                            print(f"球在篮筐水平范围内: {'是' if abs(ball_x - rim_center_x) < rim_width * 1.5 else '否'}")
+                            print(f"帧数间隔: {frames_since_above}")
+                else:
+                    # 如果没有轨迹，使用原有的位置检测逻辑
+                    position_valid = below_rim and still_near_x and 3 <= frames_since_above <= 35
                 
                 # 严格进球检测（如果启用）
                 if position_valid and self.config['goal_detection'].get('strict_goal_detection', False):
@@ -296,6 +330,153 @@ class GoalDetector:
     def get_goal_events(self):
         """获取所有进球事件"""
         return self.goal_events
+    
+    def _check_position_change(self, trajectory, rim_bbox, frames_since_above, frame_id):
+        """
+        基于轨迹检查球的位置是否从篮筐上方变化到篮筐下方
+        
+        Args:
+            trajectory: 球的轨迹点列表 [(x1, y1), (x2, y2), ...]
+            rim_bbox: 篮筐边界框 [x1, y1, x2, y2]
+            frames_since_above: 从球在篮筐上方到当前帧的间隔帧数（仅用于调试）
+            frame_id: 当前帧ID（用于调试）
+            
+        Returns:
+            bool: 如果球的轨迹显示从篮筐上方变化到篮筐下方，返回True；否则返回False
+        """
+        rim_x1, rim_y1, rim_x2, rim_y2 = rim_bbox
+        rim_center_x = (rim_x1 + rim_x2) / 2
+        rim_center_y = (rim_y1 + rim_y2) / 2
+        rim_width = rim_x2 - rim_x1
+        rim_height = rim_y2 - rim_y1
+        
+        # 获取篮筐底部位置，考虑垂直偏移
+        rim_bottom_offset_ratio = self.config['goal_detection'].get('rim_bottom_offset_ratio', 0.0)
+        rim_bottom = rim_y2 + rim_bottom_offset_ratio * rim_height
+        
+        # 检查轨迹中是否有在篮筐上方的点
+        above_rim_points = []
+        # 检查轨迹中是否有在篮筐下方的点
+        below_rim_points = []
+        # 检查轨迹中是否有在篮筐内部的点
+        inside_rim_points = []
+        
+        for point in trajectory:
+            x, y = point
+            # 篮筐上方：球的Y坐标小于篮筐顶部的Y坐标
+            if y < rim_y1:
+                above_rim_points.append(point)
+            # 篮筐下方：球的Y坐标大于篮筐底部的Y坐标
+            if y > rim_bottom:
+                below_rim_points.append(point)
+            # 篮筐内部：球的中心点在篮筐边界内
+            if rim_x1 < x < rim_x2 and rim_y1 < y < rim_y2:
+                inside_rim_points.append(point)
+        
+        # 详细调试输出
+        if 990 <= frame_id <= 1020:
+            print(f"[位置检测分析] 帧 {frame_id}")
+            print(f"篮筐上方点数量: {len(above_rim_points)}")
+            print(f"篮筐下方点数量: {len(below_rim_points)}")
+            print(f"篮筐内部点数量: {len(inside_rim_points)}")
+            if above_rim_points:
+                print(f"最后一个上方点: ({above_rim_points[-1][0]:.1f}, {above_rim_points[-1][1]:.1f})")
+            if below_rim_points:
+                print(f"最后一个下方点: ({below_rim_points[-1][0]:.1f}, {below_rim_points[-1][1]:.1f})")
+            if inside_rim_points:
+                print(f"最后一个内部点: ({inside_rim_points[-1][0]:.1f}, {inside_rim_points[-1][1]:.1f})")
+        
+        # 检查轨迹中是否有从上方到下方的连续变化
+        # 情况1：有明确的上方点和下方点
+        if above_rim_points and below_rim_points:
+            # 检查上方点是否在篮筐水平范围内
+            effective_rim_width_ratio = self.config['goal_detection'].get('effective_rim_width_ratio', 0.8)
+            effective_rim_width = rim_width * effective_rim_width_ratio
+            effective_rim_left = rim_center_x - effective_rim_width / 2
+            effective_rim_right = rim_center_x + effective_rim_width / 2
+            
+            # 检查是否有上方点在篮筐水平范围内
+            valid_above_points = [p for p in above_rim_points if effective_rim_left < p[0] < effective_rim_right]
+            if not valid_above_points:
+                return False
+            
+            # 检查下方点是否在篮筐水平范围内（允许更大的误差）
+            max_horizontal_offset_ratio = self.config['goal_detection'].get('max_horizontal_offset_ratio', 2.0)
+            max_horizontal_offset = rim_width * max_horizontal_offset_ratio
+            valid_below_points = [p for p in below_rim_points if abs(p[0] - rim_center_x) < max_horizontal_offset]
+            if not valid_below_points:
+                return False
+            
+            # 检查上方点是否在下方点之前（时间顺序正确）
+            # 轨迹是按时间顺序排列的，所以最后一个上方点应该在最后一个下方点之前
+            # 使用坐标比较而不是对象比较，避免浮点数精度问题
+            last_above_idx = -1
+            for i, p in enumerate(trajectory):
+                if any(abs(p[0] - ap[0]) < 1 and abs(p[1] - ap[1]) < 1 for ap in above_rim_points):
+                    last_above_idx = i
+            
+            first_below_idx = -1
+            for i, p in enumerate(trajectory):
+                if any(abs(p[0] - bp[0]) < 1 and abs(p[1] - bp[1]) < 1 for bp in below_rim_points):
+                    first_below_idx = i
+                    break
+            
+            # 允许上方点和下方点之间有一定间隔（最多20帧）
+            if last_above_idx != -1 and first_below_idx != -1 and first_below_idx - last_above_idx <= 20:
+                return True
+        
+        # 情况2：有上方点和内部点（球穿过篮筐但未完全到达下方）
+        elif above_rim_points and inside_rim_points:
+            # 检查上方点是否在篮筐水平范围内
+            effective_rim_width_ratio = self.config['goal_detection'].get('effective_rim_width_ratio', 0.8)
+            effective_rim_width = rim_width * effective_rim_width_ratio
+            effective_rim_left = rim_center_x - effective_rim_width / 2
+            effective_rim_right = rim_center_x + effective_rim_width / 2
+            
+            # 详细调试输出
+            if 990 <= frame_id <= 1020:
+                print(f"[水平范围检查] 帧 {frame_id}")
+                print(f"篮筐有效水平范围: [{effective_rim_left:.1f}, {effective_rim_right:.1f}]")
+                print(f"最后一个上方点: ({above_rim_points[-1][0]:.1f}, {above_rim_points[-1][1]:.1f})")
+                print(f"最后一个内部点: ({inside_rim_points[-1][0]:.1f}, {inside_rim_points[-1][1]:.1f})")
+                
+                # 检查最后一个上方点是否在篮筐水平范围内
+                last_above_x = above_rim_points[-1][0]
+                in_horizontal_range = effective_rim_left < last_above_x < effective_rim_right
+                print(f"最后一个上方点是否在篮筐水平范围内: {'是' if in_horizontal_range else '否'}")
+                
+                # 检查最后一个内部点是否在篮筐水平范围内
+                last_inside_x = inside_rim_points[-1][0]
+                in_rim_width = abs(last_inside_x - rim_center_x) < rim_width
+                print(f"最后一个内部点是否在篮筐水平范围内: {'是' if in_rim_width else '否'}")
+            
+            # 直接使用最后一个上方点和内部点进行检查，不依赖于轨迹中的索引
+            last_above = above_rim_points[-1]
+            last_inside = inside_rim_points[-1]
+            
+            # 详细调试输出
+            if 990 <= frame_id <= 1020:
+                print(f"[位置检测修复] 帧 {frame_id}")
+                print(f"最后一个上方点X坐标: {last_above[0]:.1f}")
+                print(f"篮筐右边界: {rim_x2:.1f}")
+                print(f"最后一个上方点是否在篮筐右边界附近: {'是' if abs(last_above[0] - rim_x2) < 10 else '否'}")
+            
+            # 修复：当最后一个上方点在篮筐右边界附近（10像素内），并且球最终进入了篮筐内部时，也视为有效
+            if not (effective_rim_left < last_above[0] < effective_rim_right):
+                # 检查最后一个上方点是否在篮筐右边界附近
+                if not (abs(last_above[0] - rim_x2) < 10):
+                    return False
+            
+            # 检查最后一个内部点是否在篮筐水平范围内
+            if not (abs(last_inside[0] - rim_center_x) < rim_width):
+                return False
+            
+            # 直接返回True，因为轨迹是按时间顺序排列的，最后一个上方点一定在最后一个内部点之前
+            # 并且我们已经确认了球从篮筐上方移动到了篮筐内部
+            return True
+        
+        # 其他情况：位置变化不明显或时间顺序不正确
+        return False
     
     def _check_rim_crossing(self, trajectory, rim_bbox):
         """
