@@ -39,21 +39,26 @@
 │  • 模型: YOLO (BR2)            │
 │  • 输入分辨率: 640              │
 │  • 置信度阈值: 0.5              │
-│  • 检测类别: ball, rim, people  │
+│  • 检测类别: basketball, hoop  │
 └─────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────┐
 │  目标跟踪与过滤                 │
 ├─────────────────────────────────┤
-│  • 篮球跟踪器                   │
+│  • 篮球跟踪器（三种可选）       │
 │    - BallTracker (原始)         │
 │      - 轨迹记录: 30帧           │
 │      - 速度计算                 │
-│    - SORT跟踪器 (新增)          │
+│    - SORT跟踪器                 │
 │      - Kalman滤波预测          │
 │      - 匈牙利算法数据关联       │
 │      - 多目标跟踪               │
+│    - 光流跟踪器 (Optical Flow)  │
+│      - Lucas-Kanade算法        │
+│      - 特征点检测与跟踪         │
+│      - 检测间隙填补             │
+│      - 光流可视化               │
 │  • 静止球过滤                   │
 │    - 静止阈值: 60帧             │
 │  • 跳跃检测过滤                 │
@@ -159,7 +164,8 @@ basketball/
 │   │   └── goal_detector.py    # 进球检测器（v1.1优化版）
 │   ├── tracker/                # 跟踪器模块
 │   │   ├── ball_tracker.py     # 篮球跟踪器
-│   │   └── sort_tracker.py     # SORT跟踪器 (新增)
+│   │   ├── sort_tracker.py     # SORT跟踪器
+│   │   └── optical_flow_tracker.py  # 光流跟踪器
 │   ├── utils/                  # 工具函数
 │   │   ├── geometry.py         # 几何计算工具
 │   │   └── video_preprocessor.py  # 视频预处理器
@@ -213,6 +219,10 @@ basketball/
 | SORT跟踪 | IoU阈值 | 0.2 | 目标关联IoU阈值 |
 | SORT跟踪 | 过程噪声 | 0.1 | 速度过程噪声协方差 |
 | SORT跟踪 | 测量噪声 | 5.0 | 测量噪声协方差 |
+| 光流跟踪 | 最大丢失帧数 | 15帧 | 目标最大丢失帧数 |
+| 光流跟踪 | 最小特征点 | 3个 | 最小特征点数量 |
+| 光流跟踪 | 特征点数量 | 100个 | 最大检测特征点数 |
+| 光流跟踪 | 窗口大小 | 15x15 | 光流计算窗口 |
 | 进球检测 | 篮筐扩展 | 1.2x | 篮筐区域扩展比例 |
 | 进球检测 | 连续帧数 | 3帧 | 最小连续帧数要求 |
 | 进球检测 | 冷却期 | 60帧 | 约2秒@30fps |
@@ -252,6 +262,18 @@ python goal_detection/goal_detection.py \
     --debug
 ```
 
+#### 使用光流跟踪器
+
+```bash
+python goal_detection/goal_detection.py \
+    --model models/BR2/weights/best.pt \
+    --video test/basketball2.mp4 \
+    --config goal_detection/config/goal_detection_config.yaml \
+    --output runs/goal_detection/output_optical_flow.mp4 \
+    --tracker optical_flow \
+    --debug
+```
+
 #### 使用原始BallTracker
 
 ```bash
@@ -273,7 +295,7 @@ python goal_detection/goal_detection.py \
 | --config | str | 否 | 配置文件路径，默认：goal_detection/config/goal_detection_config.yaml |
 | --output | str | 否 | 输出视频路径 |
 | --debug | bool | 否 | 开启调试模式，输出详细检测统计 |
-| --tracker | str | 否 | 跟踪器类型，可选：'sort'（默认）或 'original' |
+| --tracker | str | 否 | 跟踪器类型，可选：'sort'（默认）、'optical_flow' 或 'original' |
 
 ## 输出文件
 
